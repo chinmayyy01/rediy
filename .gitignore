@@ -1,3 +1,23 @@
-venv/
+# Python cache
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
+
+# Virtual environment
+venv/
+.env/
+.venv/
+
+# VS Code
+.vscode/
+
+# AOF persistence file
+appendonly.aof
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log

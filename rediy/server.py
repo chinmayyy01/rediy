@@ -12,24 +12,38 @@ class Server:
         self.commands = {
             "GET": self.get,
             "SET": self.set,
-            "DELETE": self.delete
+            "DELETE": self.delete,
+            "MGET": self.mget,
+            "MSET": self.mset,
+            "FLUSH": self.flush
         }
+        self.aof_file = "appendonly.aof"
+        self.load_aof()
         
     def start(self):
         self.server_socket.bind((self.host, self.port))
         self.server_socket.listen()
+        self.server_socket.settimeout(1)
         
         print(f"Server started on {self.host}:{self.port}")
 
-        while True:
-            conn, addr = self.server_socket.accept()
-            thread = threading.Thread(target=self.handle_client, args=(conn, addr), daemon=True)
-            thread.start()
-
-    def handle_client(self, conn, addr):
         try:
             while True:
-                message = self.protocol.parse(conn)
+                try:
+                    conn, addr = self.server_socket.accept()
+                    thread = threading.Thread(target=self.handle_client, args=(conn, addr), daemon=True)
+                    thread.start()
+                except socket.timeout:
+                    continue
+        except KeyboardInterrupt:
+            print("Shutting down server...")
+            self.server_socket.close()
+
+    def handle_client(self, conn, addr):
+        stream = conn.makefile("rb")
+        try:
+            while True:
+                message = self.protocol.parse(stream)
                 
                 if not isinstance(message, list):
                     message = [message]
@@ -37,22 +51,48 @@ class Server:
                 command_name = message[0].upper()
                 
                 if command_name not in self.commands:
-                    response = f"-ERR unknown command\r\n"
-                    conn.sendall(response.encode())
+                    conn.sendall(b"-ERR unknown command\r\n")
                     continue
                 
                 try:
                     result = self.commands[command_name](*message[1:])
+                    if command_name in ["SET", "DELETE", "MSET", "FLUSH"]:
+                        self.append_to_aof(message)
                     self.send_response(conn, result)
                 except Exception as e:
                     error = f"-ERR {str(e)}\r\n"
-                    conn.sendall(error.encode())
+                    conn.sendall(error)
                 
         except ConnectionError:
             pass
         finally:
+            stream.close()
             conn.close()
             
+    def load_aof(self):
+        try:
+            with open(self.aof_file, "rb") as f:
+                while True:
+                    try:
+                        command = self.protocol.parse(f)
+                    except Exception as e:
+                        print("AOF load error:", e)
+                        break
+                    if isinstance(command, list):
+                        cmd = command[0].upper()
+                        if cmd in self.commands:
+                            self.commands[cmd](*command[1:])
+        except FileNotFoundError:
+            pass
+    
+    def append_to_aof(self, command):
+        with open(self.aof_file, "ab") as f:
+            f.write(f"*{len(command)}\r\n".encode())
+            for item in command:
+                encoded = item.encode()
+                f.write(f"${len(encoded)}\r\n".encode())
+                f.write(encoded + b"\r\n")        
+         
     def get(self, key):
         return self.store.get(key, None)
     def set(self, key, value):
@@ -63,6 +103,20 @@ class Server:
             del self.store[key]
             return 1
         return 0
+    def mget(self, *keys):
+        return [self.store.get(key, None) for key in keys]
+    def mset(self, *items):
+        if len(items) % 2 != 0:
+            raise Exception("MSET requires an even number of arguments")
+        for i in range(0, len(items), 2):
+            key = items[i]
+            value = items[i + 1]
+            self.store[key] = value
+        return "OK"
+    def flush(self):
+        count = len(self.store)
+        self.store.clear()
+        return count
         
     def send_response(self, conn, data):
         if data is None:
@@ -74,6 +128,10 @@ class Server:
         elif isinstance(data, int):
             response = f":{data}\r\n".encode()
             conn.sendall(response)
+        elif isinstance(data, list):
+            conn.sendall(f"*{len(data)}\r\n".encode())
+            for item in data:
+                self.send_response(conn, item)
         else:
             error = f"-ERR unsupported response type\r\n"
             conn.sendall(error)
