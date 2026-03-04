@@ -19,6 +19,8 @@ class Server:
         }
         self.aof_file = "appendonly.aof"
         self.load_aof()
+        self.store_lock = threading.Lock()
+        self.aof_lock = threading.Lock()
         
     def start(self):
         self.server_socket.bind((self.host, self.port))
@@ -80,42 +82,48 @@ class Server:
                         break
                     if isinstance(command, list):
                         cmd = command[0].upper()
-                        if cmd in self.commands:
-                            self.commands[cmd](*command[1:])
+                        with self.store_lock:
+                            if cmd in self.commands:
+                                self.commands[cmd](*command[1:])
         except FileNotFoundError:
             pass
     
     def append_to_aof(self, command):
-        with open(self.aof_file, "ab") as f:
-            f.write(f"*{len(command)}\r\n".encode())
-            for item in command:
-                encoded = item.encode()
-                f.write(f"${len(encoded)}\r\n".encode())
-                f.write(encoded + b"\r\n")        
+        with self.aof_lock:
+            with open(self.aof_file, "ab") as f:
+                f.write(f"*{len(command)}\r\n".encode())
+                for item in command:
+                    encoded = item.encode()
+                    f.write(f"${len(encoded)}\r\n".encode())
+                    f.write(encoded + b"\r\n")        
          
     def get(self, key):
         return self.store.get(key, None)
     def set(self, key, value):
-        self.store[key] = value
+        with self.store_lock:
+            self.store[key] = value
         return "OK"
     def delete(self, key):
-        if key in self.store:
-            del self.store[key]
-            return 1
-        return 0
+        with self.store_lock:
+            if key in self.store:
+                del self.store[key]
+                return 1
+            return 0
     def mget(self, *keys):
         return [self.store.get(key, None) for key in keys]
     def mset(self, *items):
         if len(items) % 2 != 0:
             raise Exception("MSET requires an even number of arguments")
-        for i in range(0, len(items), 2):
-            key = items[i]
-            value = items[i + 1]
-            self.store[key] = value
+        with self.store_lock:
+            for i in range(0, len(items), 2):
+                key = items[i]
+                value = items[i + 1]
+                self.store[key] = value
         return "OK"
     def flush(self):
-        count = len(self.store)
-        self.store.clear()
+        with self.store_lock:
+            count = len(self.store)
+            self.store.clear()
         return count
         
     def send_response(self, conn, data):
