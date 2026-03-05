@@ -18,6 +18,7 @@ class Server:
             "FLUSH": self.flush
         }
         self.aof_file = "appendonly.aof"
+        self.aof_handle = open(self.aof_file, "ab")
         self.load_aof()
         self.store_lock = threading.Lock()
         self.aof_lock = threading.Lock()
@@ -39,6 +40,7 @@ class Server:
                     continue
         except KeyboardInterrupt:
             print("Shutting down server...")
+            self.aof_handle.close()
             self.server_socket.close()
 
     def handle_client(self, conn, addr):
@@ -90,12 +92,13 @@ class Server:
     
     def append_to_aof(self, command):
         with self.aof_lock:
-            with open(self.aof_file, "ab") as f:
-                f.write(f"*{len(command)}\r\n".encode())
-                for item in command:
-                    encoded = item.encode()
-                    f.write(f"${len(encoded)}\r\n".encode())
-                    f.write(encoded + b"\r\n")        
+            f = self.aof_handle
+            f.write(f"*{len(command)}\r\n".encode())
+            for item in command:
+                encoded = item.encode()
+                f.write(f"${len(encoded)}\r\n".encode())
+                f.write(encoded + b"\r\n")       
+            f.flush() 
          
     def get(self, key):
         return self.store.get(key, None)
