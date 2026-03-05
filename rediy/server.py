@@ -75,12 +75,15 @@ class Server:
             
     def load_aof(self):
         try:
-            with open(self.aof_file, "rb") as f:
+            with open(self.aof_file, "rb+") as f:
+                last_valid_pos = 0
                 while True:
                     try:
+                        last_valid_pos = f.tell()
                         command = self.protocol.parse(f)
                     except Exception as e:
-                        print("AOF load error:", e)
+                        print("Detected corrupted AOF file, truncating to last valid position")
+                        f.truncate(last_valid_pos)
                         break
                     if isinstance(command, list):
                         cmd = command[0].upper()
