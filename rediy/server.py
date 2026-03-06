@@ -1,3 +1,4 @@
+import os
 import socket
 import threading
 from rediy.protocol import ProtocolHandler
@@ -22,6 +23,7 @@ class Server:
         self.load_aof()
         self.store_lock = threading.Lock()
         self.aof_lock = threading.Lock()
+        self.commands["REWRITE"] = self.rewrite_command
         
     def start(self):
         self.server_socket.bind((self.host, self.port))
@@ -149,3 +151,22 @@ class Server:
         else:
             error = f"-ERR unsupported response type\r\n"
             conn.sendall(error)
+            
+    def rewrite_aof(self):
+        temp_file = "appendonly.tmp"
+        with open(temp_file, "wb") as f:
+            with self.store_lock:
+                for key, value in self.store.items():
+                    command = ["SET", key, value]
+                    f.write(f"*{len(command)}\r\n".encode())
+                    for item in command:
+                        encoded = item.encode()
+                        f.write(f"${len(encoded)}\r\n".encode())
+                        f.write(encoded + b"\r\n")
+        self.aof_handle.close()
+        os.replace(temp_file, self.aof_file)
+        self.aof_handle = open(self.aof_file, "ab")
+        
+    def rewrite_command(self):
+        self.rewrite_aof()
+        return "OK"
