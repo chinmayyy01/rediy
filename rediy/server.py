@@ -1,7 +1,8 @@
 import os
+import time
 import socket
 import threading
-from rediy.protocol import ProtocolHandler
+from rediy.protocol import ProtocolError, ProtocolHandler
 
 class Server:
     def __init__(self, host="127.0.0.1", port=6379):
@@ -10,6 +11,9 @@ class Server:
         self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.protocol = ProtocolHandler()
         self.store = {}
+        self.expiry = {}
+        self.store_lock = threading.Lock()
+        self.aof_lock = threading.Lock()
         self.commands = {
             "GET": self.get,
             "SET": self.set,
@@ -21,8 +25,6 @@ class Server:
         self.aof_file = "appendonly.aof"
         self.aof_handle = open(self.aof_file, "ab")
         self.load_aof()
-        self.store_lock = threading.Lock()
-        self.aof_lock = threading.Lock()
         self.commands["REWRITE"] = self.rewrite_command
         
     def start(self):
@@ -31,6 +33,9 @@ class Server:
         self.server_socket.settimeout(1)
         
         print(f"Server started on {self.host}:{self.port}")
+        
+        cleanup_thread = threading.Thread(target=self.cleanup_expired_keys, daemon=True)
+        cleanup_thread.start()
 
         try:
             while True:
@@ -49,7 +54,13 @@ class Server:
         stream = conn.makefile("rb")
         try:
             while True:
-                message = self.protocol.parse(stream)
+                try:
+                    message = self.protocol.parse(stream)
+                except ProtocolError:
+                    conn.sendall(b"-ERR protocol error\r\n")
+                    continue
+                except ConnectionError:
+                    break
                 
                 if not isinstance(message, list):
                     message = [message]
@@ -67,10 +78,7 @@ class Server:
                     self.send_response(conn, result)
                 except Exception as e:
                     error = f"-ERR {str(e)}\r\n"
-                    conn.sendall(error)
-                
-        except ConnectionError:
-            pass
+                    conn.sendall(error.encode())
         finally:
             stream.close()
             conn.close()
@@ -106,19 +114,35 @@ class Server:
             f.flush() 
          
     def get(self, key):
-        return self.store.get(key, None)
-    def set(self, key, value):
+        with self.store_lock:
+            if key in self.expiry and time.time() > self.expiry[key]:
+                self.store.pop(key, None)
+                self.expiry.pop(key, None)
+                return None
+            return self.store.get(key, None)
+    
+    def set(self, key, value, *args):
         with self.store_lock:
             self.store[key] = value
+            if len(args) == 2 and args[0].upper() == "EX":
+                seconds = int(args[1])
+                self.expiry[key] = time.time() + seconds
+            else:
+                if key in self.expiry:
+                    self.expiry.pop(key, None)
         return "OK"
+    
     def delete(self, key):
         with self.store_lock:
             if key in self.store:
-                del self.store[key]
+                self.store.pop(key, None)
+                self.expiry.pop(key, None)
                 return 1
             return 0
+        
     def mget(self, *keys):
         return [self.store.get(key, None) for key in keys]
+    
     def mset(self, *items):
         if len(items) % 2 != 0:
             raise Exception("MSET requires an even number of arguments")
@@ -128,6 +152,7 @@ class Server:
                 value = items[i + 1]
                 self.store[key] = value
         return "OK"
+    
     def flush(self):
         with self.store_lock:
             count = len(self.store)
@@ -150,7 +175,7 @@ class Server:
                 self.send_response(conn, item)
         else:
             error = f"-ERR unsupported response type\r\n"
-            conn.sendall(error)
+            conn.sendall(error.encode())
             
     def rewrite_aof(self):
         temp_file = "appendonly.tmp"
@@ -160,7 +185,7 @@ class Server:
                     command = ["SET", key, value]
                     f.write(f"*{len(command)}\r\n".encode())
                     for item in command:
-                        encoded = item.encode()
+                        encoded = str(item).encode()
                         f.write(f"${len(encoded)}\r\n".encode())
                         f.write(encoded + b"\r\n")
         self.aof_handle.close()
@@ -170,3 +195,13 @@ class Server:
     def rewrite_command(self):
         self.rewrite_aof()
         return "OK"
+    
+    def cleanup_expired_keys(self):
+        while True:
+            time.sleep(5)
+            with self.store_lock:
+                now = time.time()
+                expired_keys = [key for key, exp in self.expiry.items() if now > exp]
+                for key in expired_keys:
+                    self.store.pop(key, None)
+                    self.expiry.pop(key, None)
