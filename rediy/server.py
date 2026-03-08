@@ -1,4 +1,5 @@
 import os
+import random
 import time
 import socket
 import threading
@@ -214,8 +215,17 @@ class Server:
         while True:
             time.sleep(5)
             with self.store_lock:
+                if not self.expiry:
+                    continue
                 now = time.time()
-                expired_keys = [key for key, exp in self.expiry.items() if now > exp]
-                for key in expired_keys:
-                    self.store.pop(key, None)
-                    self.expiry.pop(key, None)
+                keys = list(self.expiry.keys())
+                sample_size = min(20, len(keys))
+                sampled = random.sample(keys, sample_size)
+                expired_count = 0
+                for key in sampled:
+                    if now > self.expiry[key]:
+                        self.store.pop(key, None)
+                        self.expiry.pop(key, None)
+                        expired_count += 1
+                if expired_count > sample_size:
+                    continue
