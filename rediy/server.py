@@ -20,7 +20,8 @@ class Server:
             "DELETE": self.delete,
             "MGET": self.mget,
             "MSET": self.mset,
-            "FLUSH": self.flush
+            "FLUSH": self.flush,
+            "TTL": self.ttl
         }
         self.aof_file = "appendonly.aof"
         self.aof_handle = open(self.aof_file, "ab")
@@ -158,6 +159,19 @@ class Server:
             count = len(self.store)
             self.store.clear()
         return count
+    
+    def ttl(self, key):
+        with self.store_lock:
+            if key not in self.store:
+                return -2
+            if key not in self.expiry:
+                return -1
+            remaining = int(self.expiry[key] - time.time())
+            if remaining < 0:
+                self.store.pop(key, None)
+                self.expiry.pop(key, None)
+                return -2
+            return remaining
         
     def send_response(self, conn, data):
         if data is None:
