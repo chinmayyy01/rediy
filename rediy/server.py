@@ -13,6 +13,9 @@ class Server:
         self.protocol = ProtocolHandler()
         self.store = {}
         self.expiry = {}
+        self.start_time = time.time()
+        self.connected_clients = 0
+        self.total_commands = 0
         self.store_lock = threading.Lock()
         self.aof_lock = threading.Lock()
         self.commands = {
@@ -22,7 +25,10 @@ class Server:
             "MGET": self.mget,
             "MSET": self.mset,
             "FLUSH": self.flush,
-            "TTL": self.ttl
+            "TTL": self.ttl,
+            "PING": self.ping,
+            "DBSIZE": self.dbsize,
+            "INFO": self.info
         }
         self.aof_file = "appendonly.aof"
         self.aof_handle = open(self.aof_file, "ab")
@@ -54,6 +60,7 @@ class Server:
 
     def handle_client(self, conn, addr):
         stream = conn.makefile("rb")
+        self.connected_clients += 1
         try:
             while True:
                 try:
@@ -74,6 +81,7 @@ class Server:
                     continue
                 
                 try:
+                    self.connected_clients -= 1
                     result = self.commands[command_name](*message[1:])
                     if command_name in ["SET", "DELETE", "MSET", "FLUSH"]:
                         self.append_to_aof(message)
@@ -82,6 +90,7 @@ class Server:
                     error = f"-ERR {str(e)}\r\n"
                     conn.sendall(error.encode())
         finally:
+            self.connected_clients -= 1
             stream.close()
             conn.close()
             
@@ -173,6 +182,23 @@ class Server:
                 self.expiry.pop(key, None)
                 return -2
             return remaining
+        
+    def ping(self):
+        return "PONG"
+    
+    def dbsize(self):
+        with self.store_lock:
+            return len(self.store)
+        
+    def info(self):
+        uptime = int(time.time() - self.start_time)
+        info_data = [
+            f"uptime:{uptime}",
+            f"keys:{len(self.store)}",
+            f"clients:{self.connected_clients}",
+            f"commands:{self.total_commands}"
+        ]
+        return "\n".join(info_data)
         
     def send_response(self, conn, data):
         if data is None:
