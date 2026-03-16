@@ -13,6 +13,9 @@ class AsyncServer:
         self.protocol = ProtocolHandler()
         self.store = {}
         self.expiry = {}
+        self.start_time = time.time()
+        self.connected_clients = 0
+        self.total_commands = 0
         self.commands = {
             "GET": self.get,
             "SET": self.set,
@@ -20,7 +23,10 @@ class AsyncServer:
             "MGET": self.mget,
             "MSET": self.mset,
             "FLUSH": self.flush,
-            "TTL": self.ttl
+            "TTL": self.ttl,
+            "PING": self.ping,
+            "DBSIZE": self.dbsize,
+            "INFO": self.info
         }
     
     async def start(self):
@@ -30,6 +36,7 @@ class AsyncServer:
             await server.serve_forever()
     
     async def handle_client(self, reader, writer):
+        self.connected_clients += 1
         try:
             while True:
                 data = await reader.read(1024)
@@ -44,11 +51,13 @@ class AsyncServer:
                     writer.write(b"-ERR unknown command\r\n")
                     await writer.drain()
                     continue
+                self.total_commands += 1
                 result = self.commands[command](*message[1:])
                 response = self.serialize(result)
                 writer.write(response)
                 await writer.drain()
         finally:
+            self.connected_clients -= 1
             writer.close()
             await writer.wait_closed()
             
@@ -119,3 +128,19 @@ class AsyncServer:
             self.expiry.pop(key, None)
             return -2
         return remaining
+    
+    def ping(self):
+        return "PONG"
+    
+    def dbsize(self):
+        return len(self.store)
+
+    def info(self):
+        uptime = int(time.time() - self.start_time)
+        info_data = [
+            f"uptime:{uptime}",
+            f"keys:{len(self.store)}",
+            f"clients:{self.connected_clients}",
+            f"commands:{self.total_commands}"
+        ]
+        return "\n".join(info_data)
